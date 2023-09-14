@@ -2,9 +2,7 @@
 pragma solidity ^0.8.0;
 
 interface IGaugeFactory {
-    function createGauge(address, address, address, address, bool, address[] memory) external returns (address);
-
-    function createGaugeV2(
+    function createGauge(
         address _rewardToken,
         address _ve,
         address _token,

@@ -2,6 +2,8 @@
 pragma solidity ^0.8.0;
 
 interface IPair {
+    function initialize(address _token0, address _token1, bool _stable) external;
+
     function metadata() external view returns (uint256 dec0, uint256 dec1, uint256 r0, uint256 r1, bool st, address t0, address t1);
 
     function claimFees() external returns (uint256, uint256);
@@ -39,4 +41,6 @@ interface IPair {
     function claimable1(address _user) external view returns (uint256);
 
     function stable() external view returns (bool);
+
+    function skim(address to) external;
 }

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/utils/math/Math.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {IERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import {MathUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/math/MathUpgradeable.sol";
 
 import "./interfaces/IRewardsDistributor.sol";
 import "./interfaces/IVotingEscrow.sol";
@@ -10,7 +11,7 @@ import "./Epoch.sol";
 
 /// @title Curve Fee Distribution modified for ve(3,3) emissions
 /// @author Curve Finance, andrecronje
-contract RewardsDistributor is IRewardsDistributor {
+contract RewardsDistributor is Initializable, IRewardsDistributor {
     event CheckpointToken(uint256 time, uint256 tokens);
     event Claimed(uint256 tokenId, uint256 amount, uint256 claim_epoch, uint256 max_epoch);
 
@@ -29,7 +30,7 @@ contract RewardsDistributor is IRewardsDistributor {
     address public token;
     address public depositor;
 
-    constructor(address _voting_escrow) {
+    function initialize(address _voting_escrow) public initializer {
         uint256 _t = (block.timestamp / EPOCH_DURATION) * EPOCH_DURATION;
         start_time = _t;
         last_token_time = _t;
@@ -38,7 +39,7 @@ contract RewardsDistributor is IRewardsDistributor {
         token = _token;
         voting_escrow = _voting_escrow;
         owner = msg.sender;
-        require(IERC20(_token).approve(_voting_escrow, type(uint256).max));
+        require(IERC20Upgradeable(_token).approve(_voting_escrow, type(uint256).max));
     }
 
     function timestamp() external view returns (uint256) {
@@ -46,7 +47,7 @@ contract RewardsDistributor is IRewardsDistributor {
     }
 
     function _checkpoint_token() internal {
-        uint256 token_balance = IERC20(token).balanceOf(address(this));
+        uint256 token_balance = IERC20Upgradeable(token).balanceOf(address(this));
         uint256 to_distribute = token_balance - token_last_balance;
         token_last_balance = token_balance;
 
@@ -147,7 +148,7 @@ contract RewardsDistributor is IRewardsDistributor {
                 if (t > pt.ts) {
                     dt = int128(int256(t - pt.ts));
                 }
-                ve_supply[t] = Math.max(uint256(int256(pt.bias - pt.slope * dt)), 0);
+                ve_supply[t] = MathUpgradeable.max(uint256(int256(pt.bias - pt.slope * dt)), 0);
             }
             t += EPOCH_DURATION;
         }
@@ -184,7 +185,7 @@ contract RewardsDistributor is IRewardsDistributor {
 
         IVotingEscrow.Point memory old_user_point;
 
-        for (uint256 i = 0; i < 50; i++) {
+        while (true) {
             if (week_cursor >= _last_token_time) break;
 
             if (week_cursor >= user_point.ts && user_epoch <= max_user_epoch) {
@@ -197,16 +198,16 @@ contract RewardsDistributor is IRewardsDistributor {
                 }
             } else {
                 int128 dt = int128(int256(week_cursor - old_user_point.ts));
-                uint256 balance_of = Math.max(uint256(int256(old_user_point.bias - dt * old_user_point.slope)), 0);
+                uint256 balance_of = MathUpgradeable.max(uint256(int256(old_user_point.bias - dt * old_user_point.slope)), 0);
                 if (balance_of == 0 && user_epoch > max_user_epoch) break;
                 if (balance_of != 0) {
-                    to_distribute += (balance_of * tokens_per_week[week_cursor]) / ve_supply[week_cursor];
+                    to_distribute += (balance_of * tokens_per_week[week_cursor - EPOCH_DURATION]) / ve_supply[week_cursor];
                 }
                 week_cursor += EPOCH_DURATION;
             }
         }
 
-        user_epoch = Math.min(max_user_epoch, user_epoch - 1);
+        user_epoch = MathUpgradeable.min(max_user_epoch, user_epoch - 1);
         user_epoch_of[_tokenId] = user_epoch;
         time_cursor_of[_tokenId] = week_cursor;
 
@@ -241,7 +242,7 @@ contract RewardsDistributor is IRewardsDistributor {
 
         IVotingEscrow.Point memory old_user_point;
 
-        for (uint256 i = 0; i < 50; i++) {
+        while (true) {
             if (week_cursor >= _last_token_time) break;
 
             if (week_cursor >= user_point.ts && user_epoch <= max_user_epoch) {
@@ -254,10 +255,10 @@ contract RewardsDistributor is IRewardsDistributor {
                 }
             } else {
                 int128 dt = int128(int256(week_cursor - old_user_point.ts));
-                uint256 balance_of = Math.max(uint256(int256(old_user_point.bias - dt * old_user_point.slope)), 0);
+                uint256 balance_of = MathUpgradeable.max(uint256(int256(old_user_point.bias - dt * old_user_point.slope)), 0);
                 if (balance_of == 0 && user_epoch > max_user_epoch) break;
                 if (balance_of != 0) {
-                    to_distribute += (balance_of * tokens_per_week[week_cursor]) / ve_supply[week_cursor];
+                    to_distribute += (balance_of * tokens_per_week[week_cursor - EPOCH_DURATION]) / ve_supply[week_cursor];
                 }
                 week_cursor += EPOCH_DURATION;
             }
@@ -267,21 +268,21 @@ contract RewardsDistributor is IRewardsDistributor {
     }
 
     function claimable(uint256 _tokenId) external view returns (uint256) {
-        uint256 _last_token_time = (last_token_time / EPOCH_DURATION) * EPOCH_DURATION;
+        uint256 _last_token_time = (last_token_time / EPOCH_DURATION) * EPOCH_DURATION + EPOCH_DURATION;
         return _claimable(_tokenId, voting_escrow, _last_token_time);
     }
 
     function claim(uint256 _tokenId) external returns (uint256) {
         if (block.timestamp >= time_cursor) _checkpoint_total_supply();
         uint256 _last_token_time = last_token_time;
-        _last_token_time = (_last_token_time / EPOCH_DURATION) * EPOCH_DURATION;
+        _last_token_time = (_last_token_time / EPOCH_DURATION) * EPOCH_DURATION + EPOCH_DURATION;
         uint256 amount = _claim(_tokenId, voting_escrow, _last_token_time);
         if (amount != 0) {
             // if locked.end then send directly
             IVotingEscrow.LockedBalance memory _locked = IVotingEscrow(voting_escrow).locked(_tokenId);
             if (_locked.end < block.timestamp) {
                 address _nftOwner = IVotingEscrow(voting_escrow).ownerOf(_tokenId);
-                IERC20(token).transfer(_nftOwner, amount);
+                IERC20Upgradeable(token).transfer(_nftOwner, amount);
             } else {
                 IVotingEscrow(voting_escrow).deposit_for(_tokenId, amount);
             }
@@ -293,7 +294,7 @@ contract RewardsDistributor is IRewardsDistributor {
     function claim_many(uint256[] memory _tokenIds) external returns (bool) {
         if (block.timestamp >= time_cursor) _checkpoint_total_supply();
         uint256 _last_token_time = last_token_time;
-        _last_token_time = (_last_token_time / EPOCH_DURATION) * EPOCH_DURATION;
+        _last_token_time = (_last_token_time / EPOCH_DURATION) * EPOCH_DURATION + EPOCH_DURATION;
         address _voting_escrow = voting_escrow;
         uint256 total = 0;
 
@@ -306,7 +307,7 @@ contract RewardsDistributor is IRewardsDistributor {
                 IVotingEscrow.LockedBalance memory _locked = IVotingEscrow(_voting_escrow).locked(_tokenId);
                 if (_locked.end < block.timestamp) {
                     address _nftOwner = IVotingEscrow(_voting_escrow).ownerOf(_tokenId);
-                    IERC20(token).transfer(_nftOwner, amount);
+                    IERC20Upgradeable(token).transfer(_nftOwner, amount);
                 } else {
                     IVotingEscrow(_voting_escrow).deposit_for(_tokenId, amount);
                 }
@@ -333,7 +334,7 @@ contract RewardsDistributor is IRewardsDistributor {
     function withdrawERC20(address _token) external {
         require(msg.sender == owner);
         require(_token != address(0));
-        uint256 _balance = IERC20(_token).balanceOf(address(this));
-        IERC20(_token).transfer(msg.sender, _balance);
+        uint256 _balance = IERC20Upgradeable(_token).balanceOf(address(this));
+        IERC20Upgradeable(_token).transfer(msg.sender, _balance);
     }
 }

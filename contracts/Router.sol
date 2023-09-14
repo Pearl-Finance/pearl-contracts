@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
+import "@openzeppelin/contracts/proxy/Clones.sol";
 
 import "./interfaces/IPair.sol";
 import "./interfaces/IPairFactory.sol";
@@ -18,9 +19,9 @@ contract Router is IRouter {
     }
 
     address public immutable factory;
+    address public immutable pairLibrary;
     IWETH public immutable weth;
     uint256 internal constant MINIMUM_LIQUIDITY = 10 ** 3;
-    bytes32 immutable pairCodeHash;
 
     // create swap event with sender and amountIn for the referral event reader system
     event Swap(address indexed sender, uint256 amount0In, address _tokenIn, address indexed to);
@@ -30,9 +31,9 @@ contract Router is IRouter {
         _;
     }
 
-    constructor(address _factory, address _weth) {
+    constructor(address _factory, address _pairLibrary, address _weth) {
         factory = _factory;
-        pairCodeHash = IPairFactory(_factory).pairCodeHash();
+        pairLibrary = _pairLibrary;
         weth = IWETH(_weth);
     }
 
@@ -46,23 +47,8 @@ contract Router is IRouter {
         require(token0 != address(0), "Router: ZERO_ADDRESS");
     }
 
-    // calculates the CREATE2 address for a pair without making any external calls
     function pairFor(address tokenA, address tokenB, bool stable) public view returns (address pair) {
-        (address token0, address token1) = sortTokens(tokenA, tokenB);
-        pair = address(
-            uint160(
-                uint256(
-                    keccak256(
-                        abi.encodePacked(
-                            hex"ff",
-                            factory,
-                            keccak256(abi.encodePacked(token0, token1, stable)),
-                            pairCodeHash // init code hash
-                        )
-                    )
-                )
-            )
-        );
+        pair = IPairFactory(factory).getPair(tokenA, tokenB, stable);
     }
 
     // given some amount of an asset and pair reserves, returns an equivalent amount of the other asset
@@ -394,19 +380,25 @@ contract Router is IRouter {
     }
 
     function _safeTransferETH(address to, uint256 value) internal {
-        (bool success, ) = to.call{value: value}(new bytes(0));
-        require(success, "TransferHelper: ETH_TRANSFER_FAILED");
+        if (value != 0) {
+            (bool success, ) = to.call{value: value}(new bytes(0));
+            require(success, "TransferHelper: ETH_TRANSFER_FAILED");
+        }
     }
 
     function _safeTransfer(address token, address to, uint256 value) internal {
-        require(token.code.length > 0);
-        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))));
+        if (value != 0) {
+            require(token.code.length > 0);
+            (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, value));
+            require(success && (data.length == 0 || abi.decode(data, (bool))));
+        }
     }
 
     function _safeTransferFrom(address token, address from, address to, uint256 value) internal {
-        require(token.code.length > 0);
-        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))));
+        if (value != 0) {
+            require(token.code.length > 0);
+            (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transferFrom.selector, from, to, value));
+            require(success && (data.length == 0 || abi.decode(data, (bool))));
+        }
     }
 }

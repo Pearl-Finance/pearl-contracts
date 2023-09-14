@@ -14,10 +14,6 @@ interface IVoter {
 
     function emergencyCouncil() external view returns (address);
 
-    function attachTokenToGauge(uint256 _tokenId, address account) external;
-
-    function detachTokenFromGauge(uint256 _tokenId, address account) external;
-
     function emitDeposit(uint256 _tokenId, address account, uint256 amount) external;
 
     function emitWithdraw(uint256 _tokenId, address account, uint256 amount) external;
@@ -49,4 +45,12 @@ interface IVoter {
     function poolVoteLength(uint256 tokenId) external view returns (uint256);
 
     function length() external view returns (uint256);
+
+    function getIncentivizedPools() external view returns (address[] memory);
+
+    function isBribe(address _bribe) external view returns (bool);
+
+    function reset(uint256 _tokenId) external;
+
+    function poke(uint256 _tokenId) external;
 }

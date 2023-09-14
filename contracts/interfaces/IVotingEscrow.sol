@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-interface IVotingEscrow {
+import {IERC721, IERC721Metadata} from "@openzeppelin/contracts/token/ERC721/extensions/IERC721Metadata.sol";
+
+interface IVotingEscrow is IERC721, IERC721Metadata {
     struct Point {
         int128 bias;
         int128 slope; // # -dweight / dt
@@ -40,15 +42,11 @@ interface IVotingEscrow {
 
     function voted(uint256) external view returns (bool);
 
-    function attachments(uint256) external view returns (uint256);
-
     function voting(uint256 tokenId) external;
 
+    function voter() external view returns (address);
+
     function abstain(uint256 tokenId) external;
-
-    function attach(uint256 tokenId) external;
-
-    function detach(uint256 tokenId) external;
 
     function checkpoint() external;
 

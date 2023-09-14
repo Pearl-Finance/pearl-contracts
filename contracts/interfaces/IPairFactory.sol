@@ -8,15 +8,15 @@ interface IPairFactory {
 
     function allPairs(uint256 index) external view returns (address);
 
-    function pairCodeHash() external pure returns (bytes32);
-
     function getPair(address tokenA, address token, bool stable) external view returns (address);
 
     function createPair(address tokenA, address tokenB, bool stable) external returns (address pair);
 
-    function getFeeAmount(bool _stable, uint256 _amount) external view returns (uint256);
+    function getFeeAmount(bool _stable, uint256 _amount, address _account) external view returns (uint256);
 
-    function getInitializable() external view returns (address, address, bool);
+    function stableFee() external view returns (uint256);
 
-    function isPaused() external view returns (bool);
+    function volatileFee() external view returns (uint256);
+
+    function isPrivileged(address _account) external view returns (bool);
 }

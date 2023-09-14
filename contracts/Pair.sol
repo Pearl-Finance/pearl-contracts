@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "@openzeppelin/contracts/proxy/Clones.sol";
+import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -10,15 +13,14 @@ import "contracts/interfaces/IPairFactory.sol";
 import "contracts/PairFees.sol";
 
 // The base pair of pools, either stable or volatile
-contract Pair is IPair {
+contract Pair is IPair, Initializable {
     string public name;
     string public symbol;
     uint8 public constant decimals = 18;
 
-    // Used to denote stable or volatile pair, not immutable since construction happens in the initialize method for CREATE2 deterministic addresses
-    bool public immutable stable;
+    bool public stable;
 
-    uint256 public totalSupply = 0;
+    uint256 public totalSupply;
 
     mapping(address => mapping(address => uint256)) public allowance;
     mapping(address => uint256) public balanceOf;
@@ -30,10 +32,10 @@ contract Pair is IPair {
 
     uint256 internal constant MINIMUM_LIQUIDITY = 10 ** 3;
 
-    address public immutable token0;
-    address public immutable token1;
-    address public immutable fees;
-    address immutable factory;
+    address public token0;
+    address public token1;
+    address public fees;
+    address factory;
 
     // Structure to capture time period obervations every 30 minutes, used for local oracles
     struct Observation {
@@ -47,8 +49,8 @@ contract Pair is IPair {
 
     Observation[] public observations;
 
-    uint256 internal immutable decimals0;
-    uint256 internal immutable decimals1;
+    uint256 internal decimals0;
+    uint256 internal decimals1;
 
     uint256 public reserve0;
     uint256 public reserve1;
@@ -59,8 +61,8 @@ contract Pair is IPair {
 
     // index0 and index1 are used to accumulate fees, this is split out from normal trades to keep the swap "clean"
     // this further allows LP holders to easily claim fees for tokens they have/staked
-    uint256 public index0 = 0;
-    uint256 public index1 = 0;
+    uint256 public index0;
+    uint256 public index1;
 
     // position assigned to each LP to track their current index0 & index1 vs the global position
     mapping(address => uint256) public supplyIndex0;
@@ -80,9 +82,8 @@ contract Pair is IPair {
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
 
-    constructor() {
+    function initialize(address _token0, address _token1, bool _stable) external initializer {
         factory = msg.sender;
-        (address _token0, address _token1, bool _stable) = IPairFactory(msg.sender).getInitializable();
         (token0, token1, stable) = (_token0, _token1, _stable);
         fees = address(new PairFees(_token0, _token1));
         if (_stable) {
@@ -97,10 +98,12 @@ contract Pair is IPair {
         decimals1 = 10 ** IERC20Metadata(_token1).decimals();
 
         observations.push(Observation(block.timestamp, 0, 0));
+
+        _unlocked = 1;
     }
 
     // simple re-entrancy check
-    uint256 internal _unlocked = 1;
+    uint256 internal _unlocked;
     modifier lock() {
         require(_unlocked == 1);
         _unlocked = 2;
@@ -131,7 +134,7 @@ contract Pair is IPair {
         claimed0 = claimable0[msg.sender];
         claimed1 = claimable1[msg.sender];
 
-        if (claimed0 > 0 || claimed1 > 0) {
+        if (claimed0 != 0 || claimed1 != 0) {
             claimable0[msg.sender] = 0;
             claimable1[msg.sender] = 0;
 
@@ -141,31 +144,33 @@ contract Pair is IPair {
         }
     }
 
-    // Accrue fees on token0
-    function _update0(uint256 amount) internal {
-        _safeTransfer(token0, fees, amount); // transfer the fees out to PairFees
-        uint256 _ratio = (amount * 1e18) / totalSupply; // 1e18 adjustment is removed during claim
-        if (_ratio > 0) {
-            index0 += _ratio;
+    // Accrue fees on token0 and token1
+    function _updateFees(uint256 amount0, uint256 amount1) internal {
+        if (amount0 != 0) {
+            _safeTransfer(token0, fees, amount0); // transfer the fees out to PairFees
+            uint256 _ratio = (amount0 * 1e18) / totalSupply; // 1e18 adjustment is removed during claim
+            if (_ratio != 0) {
+                index0 += _ratio;
+            }
         }
-        emit Fees(msg.sender, amount, 0);
-    }
-
-    // Accrue fees on token1
-    function _update1(uint256 amount) internal {
-        _safeTransfer(token1, fees, amount);
-        uint256 _ratio = (amount * 1e18) / totalSupply;
-        if (_ratio > 0) {
-            index1 += _ratio;
+        if (amount1 != 0) {
+            _safeTransfer(token1, fees, amount1); // transfer the fees out to PairFees
+            uint256 _ratio = (amount1 * 1e18) / totalSupply; // 1e18 adjustment is removed during claim
+            if (_ratio != 0) {
+                index1 += _ratio;
+            }
         }
-        emit Fees(msg.sender, 0, amount);
+        if (amount0 != 0 || amount1 != 0) {
+            PairFees(fees).notifyFeeAmounts(amount0, amount1);
+            emit Fees(msg.sender, amount0, amount1);
+        }
     }
 
     // this function MUST be called on any balance changes, otherwise can be used to infinitely claim fees
     // Fees are segregated from core funds, so fees can never put liquidity at risk
     function _updateFor(address recipient) internal {
         uint256 _supplied = balanceOf[recipient]; // get LP balance of `recipient`
-        if (_supplied > 0) {
+        if (_supplied != 0) {
             uint256 _supplyIndex0 = supplyIndex0[recipient]; // get last adjusted index0 for recipient
             uint256 _supplyIndex1 = supplyIndex1[recipient];
             uint256 _index0 = index0; // get global index0 for accumulated fees
@@ -174,11 +179,11 @@ contract Pair is IPair {
             supplyIndex1[recipient] = _index1;
             uint256 _delta0 = _index0 - _supplyIndex0; // see if there is any difference that need to be accrued
             uint256 _delta1 = _index1 - _supplyIndex1;
-            if (_delta0 > 0) {
+            if (_delta0 != 0) {
                 uint256 _share = (_supplied * _delta0) / 1e18; // add accrued difference for each supplied token
                 claimable0[recipient] += _share;
             }
-            if (_delta1 > 0) {
+            if (_delta1 != 0) {
                 uint256 _share = (_supplied * _delta1) / 1e18;
                 claimable1[recipient] += _share;
             }
@@ -198,7 +203,7 @@ contract Pair is IPair {
     function _update(uint256 balance0, uint256 balance1, uint256 _reserve0, uint256 _reserve1) internal {
         uint256 blockTimestamp = block.timestamp;
         uint256 timeElapsed = blockTimestamp - blockTimestampLast; // overflow is desired
-        if (timeElapsed > 0 && _reserve0 != 0 && _reserve1 != 0) {
+        if (timeElapsed != 0 && _reserve0 != 0 && _reserve1 != 0) {
             reserve0CumulativeLast += _reserve0 * timeElapsed;
             reserve1CumulativeLast += _reserve1 * timeElapsed;
         }
@@ -252,7 +257,10 @@ contract Pair is IPair {
     function quote(address tokenIn, uint256 amountIn, uint256 granularity) external view returns (uint256 amountOut) {
         uint256[] memory _prices = sample(tokenIn, amountIn, granularity, 1);
         uint256 priceAverageCumulative;
-        for (uint256 i = 0; i < _prices.length; i++) {
+        for (uint256 i = _prices.length; i != 0; ) {
+            unchecked {
+                --i;
+            }
             priceAverageCumulative += _prices[i];
         }
         return priceAverageCumulative / granularity;
@@ -267,20 +275,22 @@ contract Pair is IPair {
         uint256[] memory _prices = new uint256[](points);
 
         uint256 length = observations.length - 1;
-        uint256 i = length - (points * window);
-        uint256 nextIndex = 0;
+        uint256 nextIndex;
         uint256 index = 0;
 
-        for (; i < length; i += window) {
-            nextIndex = i + window;
+        for (uint256 i = length - (points * window); i < length; ) {
+            unchecked {
+                nextIndex = i + window;
+            }
             uint256 timeElapsed = observations[nextIndex].timestamp - observations[i].timestamp;
             uint256 _reserve0 = (observations[nextIndex].reserve0Cumulative - observations[i].reserve0Cumulative) / timeElapsed;
             uint256 _reserve1 = (observations[nextIndex].reserve1Cumulative - observations[i].reserve1Cumulative) / timeElapsed;
             _prices[index] = _getAmountOut(amountIn, tokenIn, _reserve0, _reserve1);
             // index < length; length cannot overflow
             unchecked {
-                index = index + 1;
+                ++index;
             }
+            i = nextIndex;
         }
         return _prices;
     }
@@ -301,7 +311,7 @@ contract Pair is IPair {
         } else {
             liquidity = Math.min((_amount0 * _totalSupply) / _reserve0, (_amount1 * _totalSupply) / _reserve1);
         }
-        require(liquidity > 0, "ILM"); // Pair: INSUFFICIENT_LIQUIDITY_MINTED
+        require(liquidity != 0, "ILM"); // Pair: INSUFFICIENT_LIQUIDITY_MINTED
         _mint(to, liquidity);
 
         _update(_balance0, _balance1, _reserve0, _reserve1);
@@ -320,7 +330,7 @@ contract Pair is IPair {
         uint256 _totalSupply = totalSupply; // gas savings, must be defined here since totalSupply can update in _mintFee
         amount0 = (_liquidity * _balance0) / _totalSupply; // using balances ensures pro-rata distribution
         amount1 = (_liquidity * _balance1) / _totalSupply; // using balances ensures pro-rata distribution
-        require(amount0 > 0 && amount1 > 0, "ILB"); // Pair: INSUFFICIENT_LIQUIDITY_BURNED
+        require(amount0 != 0 && amount1 != 0, "ILB"); // Pair: INSUFFICIENT_LIQUIDITY_BURNED
         _burn(address(this), _liquidity);
         _safeTransfer(_token0, to, amount0);
         _safeTransfer(_token1, to, amount1);
@@ -333,8 +343,8 @@ contract Pair is IPair {
 
     // this low-level function should be called from a contract which performs important safety checks
     function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external lock {
-        require(!IPairFactory(factory).isPaused());
-        require(amount0Out > 0 || amount1Out > 0, "IOA"); // Pair: INSUFFICIENT_OUTPUT_AMOUNT
+        require(!Pausable(factory).paused());
+        require(amount0Out != 0 || amount1Out != 0, "IOA"); // Pair: INSUFFICIENT_OUTPUT_AMOUNT
         (uint256 _reserve0, uint256 _reserve1) = (reserve0, reserve1);
         require(amount0Out < _reserve0 && amount1Out < _reserve1, "IL"); // Pair: INSUFFICIENT_LIQUIDITY
 
@@ -344,20 +354,22 @@ contract Pair is IPair {
             // scope for _token{0,1}, avoids stack too deep errors
             (address _token0, address _token1) = (token0, token1);
             require(to != _token0 && to != _token1, "IT"); // Pair: INVALID_TO
-            if (amount0Out > 0) _safeTransfer(_token0, to, amount0Out); // optimistically transfer tokens
-            if (amount1Out > 0) _safeTransfer(_token1, to, amount1Out); // optimistically transfer tokens
-            if (data.length > 0) IPairCallee(to).hook(msg.sender, amount0Out, amount1Out, data); // callback, used for flash loans
+            if (amount0Out != 0) _safeTransfer(_token0, to, amount0Out); // optimistically transfer tokens
+            if (amount1Out != 0) _safeTransfer(_token1, to, amount1Out); // optimistically transfer tokens
+            if (data.length != 0) IPairCallee(to).hook(msg.sender, amount0Out, amount1Out, data); // callback, used for flash loans
             _balance0 = IERC20(_token0).balanceOf(address(this));
             _balance1 = IERC20(_token1).balanceOf(address(this));
         }
         uint256 amount0In = _balance0 > _reserve0 - amount0Out ? _balance0 - (_reserve0 - amount0Out) : 0;
         uint256 amount1In = _balance1 > _reserve1 - amount1Out ? _balance1 - (_reserve1 - amount1Out) : 0;
-        require(amount0In > 0 || amount1In > 0, "IIA"); // Pair: INSUFFICIENT_INPUT_AMOUNT
+        require(amount0In != 0 || amount1In != 0, "IIA"); // Pair: INSUFFICIENT_INPUT_AMOUNT
         {
             // scope for reserve{0,1}Adjusted, avoids stack too deep errors
             (address _token0, address _token1) = (token0, token1);
-            if (amount0In > 0) _update0(IPairFactory(factory).getFeeAmount(stable, amount0In)); // accrue fees for token0 and move them out of pool
-            if (amount1In > 0) _update1(IPairFactory(factory).getFeeAmount(stable, amount1In)); // accrue fees for token1 and move them out of pool
+            _updateFees(
+                IPairFactory(factory).getFeeAmount(stable, amount0In, msg.sender),
+                IPairFactory(factory).getFeeAmount(stable, amount1In, msg.sender)
+            ); // accrue fees for token0 and token1 and move them out of pool
             _balance0 = IERC20(_token0).balanceOf(address(this)); // since we removed tokens, we need to reconfirm balances, can also simply use previous balance - amountIn/ 10000, but doing balanceOf again as safety check
             _balance1 = IERC20(_token1).balanceOf(address(this));
             // The curve, either x3y+y3x for stable pools, or x*y for volatile pools
@@ -389,7 +401,7 @@ contract Pair is IPair {
     }
 
     function _get_y(uint256 x0, uint256 xy, uint256 y) internal pure returns (uint256) {
-        for (uint256 i = 0; i < 255; i++) {
+        for (uint256 i = 255; i != 0; ) {
             uint256 y_prev = y;
             uint256 k = _f(x0, y);
             if (k < xy) {
@@ -408,13 +420,16 @@ contract Pair is IPair {
                     return y;
                 }
             }
+            unchecked {
+                --i;
+            }
         }
         return y;
     }
 
     function getAmountOut(uint256 amountIn, address tokenIn) external view returns (uint256) {
         (uint256 _reserve0, uint256 _reserve1) = (reserve0, reserve1);
-        amountIn -= IPairFactory(factory).getFeeAmount(stable, amountIn); // remove fee from amount received
+        amountIn -= IPairFactory(factory).getFeeAmount(stable, amountIn, msg.sender); // remove fee from amount received
         return _getAmountOut(amountIn, tokenIn, _reserve0, _reserve1);
     }
 
@@ -461,7 +476,6 @@ contract Pair is IPair {
 
     function approve(address spender, uint256 amount) external returns (bool) {
         allowance[msg.sender][spender] = amount;
-
         emit Approval(msg.sender, spender, amount);
         return true;
     }
@@ -522,8 +536,33 @@ contract Pair is IPair {
     }
 
     function _safeTransfer(address token, address to, uint256 value) internal {
-        require(token.code.length > 0);
-        (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, value));
-        require(success && (data.length == 0 || abi.decode(data, (bool))));
+        if (value != 0) {
+            require(token.code.length != 0);
+            (bool success, bytes memory data) = token.call(abi.encodeWithSelector(IERC20.transfer.selector, to, value));
+            require(success && (data.length == 0 || abi.decode(data, (bool))));
+        }
+    }
+
+    function migratePairFees() external {
+        require(msg.sender == factory);
+        (address _token0, address _token1) = (token0, token1);
+        PairFees oldFees = PairFees(fees);
+        PairFees newFees = new PairFees(_token0, _token1);
+
+        try oldFees.skim() returns (uint256 skimmed0, uint256 skimmed1) {
+            if (skimmed0 != 0) {
+                _safeTransfer(_token0, address(newFees), skimmed0);
+            }
+            if (skimmed1 != 0) {
+                _safeTransfer(_token1, address(newFees), skimmed1);
+            }
+        } catch {}
+
+        uint256 _reserve0 = IERC20(_token0).balanceOf(address(oldFees));
+        uint256 _reserve1 = IERC20(_token1).balanceOf(address(oldFees));
+        oldFees.claimFeesFor(address(newFees), _reserve0, _reserve1);
+        newFees.notifyFeeAmounts(_reserve0, _reserve1);
+
+        fees = address(newFees);
     }
 }
